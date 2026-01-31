@@ -21,7 +21,7 @@
 在你的 Linux 服务器上执行以下一行命令：
 
 ```bash
-curl -sL https://raw.githubusercontent.com/vlongx/caddy/main/caddy.sh | sudo bash
+curl -sL https://raw.githubusercontent.com/vlongx/caddy/main/caddy.sh -o /tmp/caddy.sh && bash /tmp/caddy.sh
 ```
 🛠 配置示例
 脚本执行后，生成的 /etc/caddy/Caddyfile 结构示例：
