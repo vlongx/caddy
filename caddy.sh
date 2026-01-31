@@ -12,7 +12,7 @@ if [ "$(id -u)" != "0" ]; then
    exit 1
 fi
 
-# 强制重定向标准输入到终端，防止管道干扰
+# 强制重定向标准输入到终端
 exec < /dev/tty
 
 # 菜单函数
@@ -63,14 +63,16 @@ add_config() {
             read -p "请输入用户名: " USERNAME
             read -s -p "请输入密码: " PASSWORD; echo ""
             HASHED_PASSWORD=$(caddy hash-password --plaintext "$PASSWORD")
-            AUTH_CONF="basicauth * {
-                $USERNAME $HASHED_PASSWORD
-            }"
+            # 注意：这里的缩进必须保留
+            AUTH_CONF="    basicauth * {
+        $USERNAME $HASHED_PASSWORD
+    }"
         fi
 
+        # 使用修正后的缩进写入 Caddyfile
         cat <<EOF >> /etc/caddy/Caddyfile
 $DOMAIN {
-    $AUTH_CONF
+$AUTH_CONF
     reverse_proxy $BACKEND {
         header_up Host {host}
         header_up X-Real-IP {remote_host}
@@ -82,9 +84,17 @@ EOF
         [[ "$CONTINUE" != "y" ]] && break
     done
 
+    echo -e "${YELLOW}正在校验并重启服务...${NC}"
     caddy fmt --overwrite /etc/caddy/Caddyfile
     systemctl restart caddy
-    echo -e "${GREEN}✅ 配置已生效！${NC}"
+
+    if systemctl is-active --quiet caddy; then
+        echo -e "${GREEN}✅ 配置已成功生效！${NC}"
+    else
+        echo -e "${RED}❌ 启动失败。${NC}"
+        echo -e "请运行以下命令查看详细报错日志："
+        echo -e "journalctl -xeu caddy"
+    fi
 }
 
 # 查看配置
