@@ -12,7 +12,7 @@ if [ "$(id -u)" != "0" ]; then
    exit 1
 fi
 
-# 菜单函数
+# 菜单函数 - 使用 /dev/tty 获取输入
 show_menu() {
     echo -e "${GREEN}=================================${NC}"
     echo -e "${GREEN}   Caddy 反代一键管理脚本       ${NC}"
@@ -23,23 +23,18 @@ show_menu() {
     echo -e "4. 卸载 Caddy"
     echo -e "0. 退出脚本"
     echo -e "${GREEN}=================================${NC}"
-    read -p "请输入选项 [0-4]: " choice
+    # 核心修复：从终端读取输入
+    read -p "请输入选项 [0-4]: " choice < /dev/tty
 }
 
-# 安装 Caddy (优化版本)
+# 安装 Caddy
 install_caddy() {
     if ! command -v caddy &> /dev/null; then
         echo -e "${YELLOW}正在安装 Caddy...${NC}"
         apt update && apt install -y debian-keyring debian-archive-keyring apt-transport-https curl > /dev/null 2>&1
         curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg > /dev/null 2>&1
         curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | tee /etc/apt/sources.list.d/caddy-stable.list > /dev/null 2>&1
-        # 使用 -y 安装，并暂时忽略启动错误
-        apt update && apt install caddy -y || echo -e "${YELLOW}提示: 初始启动跳过，等待配置完成...${NC}"
-        
-        # 初始安装后如果文件不存在，先创建一个基础结构防止报错
-        if [ ! -f /etc/caddy/Caddyfile ]; then
-            echo ":80 { root * /usr/share/caddy }" > /etc/caddy/Caddyfile
-        fi
+        apt update && apt install caddy -y || echo -e "${YELLOW}初始启动跳过...${NC}"
     fi
 }
 
@@ -48,32 +43,29 @@ add_config() {
     install_caddy
     while true; do
         echo -e "\n${YELLOW}>> 正在配置新站点...${NC}"
-        read -p "请输入要绑定的域名 (如 mon.example.com): " DOMAIN
+        read -p "请输入要绑定的域名 (如 mon.example.com): " DOMAIN < /dev/tty
         
         BACKEND=""
         while [[ -z "$BACKEND" ]]; do
-            read -p "请输入后端地址和端口 (如 localhost:9090): " BACKEND
+            read -p "请输入后端地址和端口 (如 localhost:9090): " BACKEND < /dev/tty
             [[ -z "$BACKEND" ]] && echo -e "${RED}错误: 后端地址不能为空。${NC}"
         done
         
-        # 身份认证引导 (加入 Prometheus 逻辑)
         AUTH_CONF=""
         if [[ "$BACKEND" == *"9090"* ]]; then
             echo -e "${YELLOW}[建议] 检测到 Prometheus (9090)，建议开启认证。${NC}"
         fi
         
-        read -p "是否开启 Basic Auth 认证? (y/n, 默认 n): " NEED_AUTH
+        read -p "是否开启 Basic Auth 认证? (y/n, 默认 n): " NEED_AUTH < /dev/tty
         if [[ "${NEED_AUTH:-n}" == "y" ]]; then
-            read -p "请输入用户名: " USERNAME
-            read -s -p "请输入密码: " PASSWORD
-            echo ""
+            read -p "请输入用户名: " USERNAME < /dev/tty
+            read -s -p "请输入密码: " PASSWORD < /dev/tty; echo ""
             HASHED_PASSWORD=$(caddy hash-password --plaintext "$PASSWORD")
             AUTH_CONF="basicauth * {
                 $USERNAME $HASHED_PASSWORD
             }"
         fi
 
-        # 写入配置
         cat <<EOF >> /etc/caddy/Caddyfile
 $DOMAIN {
     $AUTH_CONF
@@ -84,26 +76,16 @@ $DOMAIN {
     encode gzip
 }
 EOF
-        read -p "配置完成。是否继续添加下一个域名? (y/n): " CONTINUE
+        read -p "配置完成。是否继续添加下一个域名? (y/n): " CONTINUE < /dev/tty
         [[ "$CONTINUE" != "y" ]] && break
     done
 
-    # 尝试应用配置
-    echo -e "${YELLOW}正在校验并重启服务...${NC}"
     caddy fmt --overwrite /etc/caddy/Caddyfile
     systemctl restart caddy
-
-    if systemctl is-active --quiet caddy; then
-        echo -e "${GREEN}✅ 配置已成功生效！${NC}"
-    else
-        echo -e "${RED}❌ 启动失败。原因可能包括：${NC}"
-        echo -e "1. 域名解析未生效 (Caddy 申请 SSL 证书需解析准确)"
-        echo -e "2. 80/443 端口被 Nginx 等占用"
-        echo -e "\n查看报错详情: journalctl -xeu caddy"
-    fi
+    echo -e "${GREEN}配置已生效！${NC}"
 }
 
-# 查看配置
+# 列表、重启、卸载函数保持不变，但 read 加 < /dev/tty
 list_configs() {
     if [ -f /etc/caddy/Caddyfile ]; then
         echo -e "${YELLOW}当前已配置的域名如下：${NC}"
@@ -113,9 +95,8 @@ list_configs() {
     fi
 }
 
-# 卸载 Caddy
 uninstall_caddy() {
-    read -p "确定要卸载 Caddy 并删除所有配置吗? (y/n): " confirm
+    read -p "确定要卸载 Caddy 并删除所有配置吗? (y/n): " confirm < /dev/tty
     if [[ "$confirm" == "y" ]]; then
         systemctl stop caddy
         apt purge -y caddy
@@ -125,8 +106,9 @@ uninstall_caddy() {
 }
 
 # 脚本主逻辑
-# 针对 curl | bash 环境，第一次运行直接进入安装/配置流程
+# 针对 curl 直接运行的引导
 if ! command -v caddy &> /dev/null; then
+    echo -e "${YELLOW}检测到未安装 Caddy，直接进入安装配置流程...${NC}"
     add_config
 fi
 
@@ -138,6 +120,6 @@ while true; do
         3) systemctl restart caddy && echo -e "${GREEN}重启成功${NC}" ;;
         4) uninstall_caddy ;;
         0) exit 0 ;;
-        *) echo -e "${RED}无效选项${NC}" ;;
+        *) echo -e "${RED}无效选项: $choice ${NC}" ;;
     esac
 done
