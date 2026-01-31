@@ -53,7 +53,7 @@ add_config() {
             [[ -z "$BACKEND" ]] && echo -e "${RED}错误: 后端地址不能为空。${NC}"
         done
         
-        AUTH_CONF=""
+        AUTH_BLOCK=""
         if [[ "$BACKEND" == *"9090"* ]]; then
             echo -e "${YELLOW}[建议] 检测到 Prometheus (9090)，建议开启认证。${NC}"
         fi
@@ -63,41 +63,40 @@ add_config() {
             read -p "请输入用户名: " USERNAME
             read -s -p "请输入密码: " PASSWORD; echo ""
             HASHED_PASSWORD=$(caddy hash-password --plaintext "$PASSWORD")
-            # 注意：这里的缩进必须保留
-            AUTH_CONF="    basicauth * {
-        $USERNAME $HASHED_PASSWORD
-    }"
+            # 预构建带缩进的认证块
+            AUTH_BLOCK=$(printf "    basicauth * {\n        %s %s\n    }" "$USERNAME" "$HASHED_PASSWORD")
         fi
 
-        # 使用修正后的缩进写入 Caddyfile
-        cat <<EOF >> /etc/caddy/Caddyfile
-$DOMAIN {
-$AUTH_CONF
-    reverse_proxy $BACKEND {
-        header_up Host {host}
-        header_up X-Real-IP {remote_host}
-    }
-    encode gzip
-}
-EOF
+        # 核心修复：直接构建临时文件并确保缩进
+        # 使用 printf 确保换行和空格不被 shell 篡改
+        printf "%s {\n" "$DOMAIN" >> /etc/caddy/Caddyfile
+        if [[ -n "$AUTH_BLOCK" ]]; then
+            printf "%s\n" "$AUTH_BLOCK" >> /etc/caddy/Caddyfile
+        fi
+        printf "    reverse_proxy %s {\n" "$BACKEND" >> /etc/caddy/Caddyfile
+        printf "        header_up Host {host}\n" >> /etc/caddy/Caddyfile
+        printf "        header_up X-Real-IP {remote_host}\n" >> /etc/caddy/Caddyfile
+        printf "    }\n" >> /etc/caddy/Caddyfile
+        printf "    encode gzip\n" >> /etc/caddy/Caddyfile
+        printf "}\n" >> /etc/caddy/Caddyfile
+
         read -p "配置完成。是否继续添加下一个域名? (y/n): " CONTINUE
         [[ "$CONTINUE" != "y" ]] && break
     done
 
     echo -e "${YELLOW}正在校验并重启服务...${NC}"
-    caddy fmt --overwrite /etc/caddy/Caddyfile
+    # 使用 caddy fmt 强制修复任何潜在的格式问题
+    caddy fmt --overwrite /etc/caddy/Caddyfile > /dev/null 2>&1
     systemctl restart caddy
 
     if systemctl is-active --quiet caddy; then
         echo -e "${GREEN}✅ 配置已成功生效！${NC}"
     else
-        echo -e "${RED}❌ 启动失败。${NC}"
-        echo -e "请运行以下命令查看详细报错日志："
-        echo -e "journalctl -xeu caddy"
+        echo -e "${RED}❌ 启动失败。请运行 journalctl -xeu caddy 查看详情。${NC}"
     fi
 }
 
-# 查看配置
+# 列表、重启、卸载保持不变
 list_configs() {
     if [ -f /etc/caddy/Caddyfile ]; then
         echo -e "${YELLOW}当前已配置的域名如下：${NC}"
@@ -107,7 +106,6 @@ list_configs() {
     fi
 }
 
-# 卸载 Caddy
 uninstall_caddy() {
     read -p "确定要卸载 Caddy 并删除所有配置吗? (y/n): " confirm
     if [[ "$confirm" == "y" ]]; then
