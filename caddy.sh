@@ -26,14 +26,20 @@ show_menu() {
     read -p "请输入选项 [0-4]: " choice
 }
 
-# 安装 Caddy
+# 安装 Caddy (优化版本)
 install_caddy() {
     if ! command -v caddy &> /dev/null; then
         echo -e "${YELLOW}正在安装 Caddy...${NC}"
         apt update && apt install -y debian-keyring debian-archive-keyring apt-transport-https curl > /dev/null 2>&1
         curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg > /dev/null 2>&1
         curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | tee /etc/apt/sources.list.d/caddy-stable.list > /dev/null 2>&1
-        apt update && apt install caddy -y
+        # 使用 -y 安装，并暂时忽略启动错误
+        apt update && apt install caddy -y || echo -e "${YELLOW}提示: 初始启动跳过，等待配置完成...${NC}"
+        
+        # 初始安装后如果文件不存在，先创建一个基础结构防止报错
+        if [ ! -f /etc/caddy/Caddyfile ]; then
+            echo ":80 { root * /usr/share/caddy }" > /etc/caddy/Caddyfile
+        fi
     fi
 }
 
@@ -44,17 +50,16 @@ add_config() {
         echo -e "\n${YELLOW}>> 正在配置新站点...${NC}"
         read -p "请输入要绑定的域名 (如 mon.example.com): " DOMAIN
         
-        # 强制要求输入端口
         BACKEND=""
         while [[ -z "$BACKEND" ]]; do
             read -p "请输入后端地址和端口 (如 localhost:9090): " BACKEND
             [[ -z "$BACKEND" ]] && echo -e "${RED}错误: 后端地址不能为空。${NC}"
         done
         
-        # 身份认证引导
+        # 身份认证引导 (加入 Prometheus 逻辑)
         AUTH_CONF=""
         if [[ "$BACKEND" == *"9090"* ]]; then
-            echo -e "${YELLOW}[建议] 检测到 9090 端口 (Prometheus)，建议开启认证。${NC}"
+            echo -e "${YELLOW}[建议] 检测到 Prometheus (9090)，建议开启认证。${NC}"
         fi
         
         read -p "是否开启 Basic Auth 认证? (y/n, 默认 n): " NEED_AUTH
@@ -64,11 +69,11 @@ add_config() {
             echo ""
             HASHED_PASSWORD=$(caddy hash-password --plaintext "$PASSWORD")
             AUTH_CONF="basicauth * {
-        $USERNAME $HASHED_PASSWORD
-    }"
+                $USERNAME $HASHED_PASSWORD
+            }"
         fi
 
-        # 写入配置 (追加模式)
+        # 写入配置
         cat <<EOF >> /etc/caddy/Caddyfile
 $DOMAIN {
     $AUTH_CONF
@@ -82,9 +87,20 @@ EOF
         read -p "配置完成。是否继续添加下一个域名? (y/n): " CONTINUE
         [[ "$CONTINUE" != "y" ]] && break
     done
+
+    # 尝试应用配置
+    echo -e "${YELLOW}正在校验并重启服务...${NC}"
     caddy fmt --overwrite /etc/caddy/Caddyfile
     systemctl restart caddy
-    echo -e "${GREEN}配置已生效！${NC}"
+
+    if systemctl is-active --quiet caddy; then
+        echo -e "${GREEN}✅ 配置已成功生效！${NC}"
+    else
+        echo -e "${RED}❌ 启动失败。原因可能包括：${NC}"
+        echo -e "1. 域名解析未生效 (Caddy 申请 SSL 证书需解析准确)"
+        echo -e "2. 80/443 端口被 Nginx 等占用"
+        echo -e "\n查看报错详情: journalctl -xeu caddy"
+    fi
 }
 
 # 查看配置
@@ -109,6 +125,11 @@ uninstall_caddy() {
 }
 
 # 脚本主逻辑
+# 针对 curl | bash 环境，第一次运行直接进入安装/配置流程
+if ! command -v caddy &> /dev/null; then
+    add_config
+fi
+
 while true; do
     show_menu
     case $choice in
